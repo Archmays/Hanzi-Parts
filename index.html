@@ -1,0 +1,1447 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { 
+  Heart, Sword, Shield, Trophy, BookOpen, 
+  Lightbulb, Home, Zap, Flame, Droplets, Mountain,
+  FileText, X, Star, Sparkles, MoveRight, Layers, Box,
+  Play, RotateCcw, SkipForward, HelpCircle,
+  Volume2, VolumeX 
+} from 'lucide-react';
+
+// --- 音效合成器 (Web Audio API) ---
+// 移到组件外部以保持上下文单例，但在第一次用户交互后初始化
+let audioCtx = null;
+
+const initAudio = () => {
+  if (!audioCtx && typeof window !== 'undefined') {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) {
+      audioCtx = new AudioContext();
+    }
+  }
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+};
+
+const playSound = (type) => {
+  if (!audioCtx) initAudio(); // 尝试初始化
+  if (!audioCtx) return;
+
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  
+  osc.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  
+  // 音量和频率参数微调，确保声音更清晰
+  if (type === 'select') {
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(400, now);
+    osc.frequency.exponentialRampToValueAtTime(600, now + 0.1);
+    gainNode.gain.setValueAtTime(0.1, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    osc.start(now);
+    osc.stop(now + 0.1);
+  } else if (type === 'crit') { 
+    // 暴击：高频方波，更有穿透力
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(400, now);
+    osc.frequency.linearRampToValueAtTime(800, now + 0.1);
+    gainNode.gain.setValueAtTime(0.15, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+    osc.start(now);
+    osc.stop(now + 0.4);
+  } else if (type === 'attack_normal') {
+    // 普通攻击：锯齿波，短促有力
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(150, now);
+    osc.frequency.exponentialRampToValueAtTime(100, now + 0.1);
+    gainNode.gain.setValueAtTime(0.1, now);
+    gainNode.gain.linearRampToValueAtTime(0.001, now + 0.15);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  } else if (type === 'attack_rare') {
+    // 稀有攻击：三角波，带点回响感
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(300, now);
+    osc.frequency.linearRampToValueAtTime(600, now + 0.2);
+    gainNode.gain.setValueAtTime(0.12, now);
+    gainNode.gain.linearRampToValueAtTime(0.001, now + 0.3);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  } else if (type === 'attack_epic') {
+    // 史诗攻击：低频震荡，持续时间长
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(80, now);
+    osc.frequency.linearRampToValueAtTime(200, now + 0.4);
+    gainNode.gain.setValueAtTime(0.2, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+    osc.start(now);
+    osc.stop(now + 0.6);
+  } else if (type === 'win') {
+    // 胜利音效：大三和弦
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(523.25, now); // C5
+    osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
+    osc.frequency.setValueAtTime(783.99, now + 0.2); // G5
+    gainNode.gain.setValueAtTime(0.1, now);
+    gainNode.gain.linearRampToValueAtTime(0.001, now + 0.8);
+    osc.start(now);
+    osc.stop(now + 0.8);
+  } else if (type === 'hit') {
+    // 受击：低沉噪音感
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(100, now);
+    osc.frequency.exponentialRampToValueAtTime(50, now + 0.2);
+    gainNode.gain.setValueAtTime(0.1, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  } else if (type === 'block') {
+    // 格挡：金属撞击感
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, now);
+    osc.frequency.exponentialRampToValueAtTime(100, now + 0.1);
+    gainNode.gain.setValueAtTime(0.15, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    osc.start(now);
+    osc.stop(now + 0.1);
+  } else if (type === 'heal') {
+    // 治疗：柔和上升
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(400, now);
+    osc.frequency.linearRampToValueAtTime(800, now + 0.3);
+    gainNode.gain.setValueAtTime(0.1, now);
+    gainNode.gain.linearRampToValueAtTime(0.001, now + 0.3);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  }
+};
+
+// --- 辅助：稀有度判定 ---
+const getRarity = (type) => {
+  if (type === 'epic') return 'epic';
+  if (type === 'normal') return 'normal';
+  return 'rare'; 
+};
+
+const getRarityConfig = (rarity) => {
+  switch (rarity) {
+    case 'epic': return { color: 'text-amber-600', border: 'border-amber-500', bg: 'bg-amber-50', label: '史诗', icon: <Star fill="currentColor" size={12}/> };
+    case 'rare': return { color: 'text-indigo-600', border: 'border-indigo-400', bg: 'bg-indigo-50', label: '稀有', icon: <Sparkles size={12}/> };
+    default: return { color: 'text-stone-600', border: 'border-stone-300', bg: 'bg-stone-50', label: '普通', icon: null };
+  }
+};
+
+// --- 游戏数据 ---
+
+const CHARACTERS = [
+  {
+    id: 'warrior',
+    name: '赤炎侠',
+    desc: '攻击型。基础伤害+5。',
+    icon: <Flame className="text-red-500" />,
+    hpBonus: 0,
+    dmgBonus: 5,
+    skillName: '烈火斩',
+    skillDesc: '造成20点火属性伤害',
+    skillCost: 3, 
+    skillEffect: (gameState) => ({ monsterHp: Math.max(0, gameState.monsterHp - 20) })
+  },
+  {
+    id: 'scholar',
+    name: '墨灵师',
+    desc: '技巧型。每回合回血+2。',
+    icon: <Droplets className="text-blue-500" />,
+    hpBonus: -10, 
+    dmgBonus: 0,
+    handSizeBonus: 1,
+    skillName: '凝神',
+    skillDesc: '恢复15点生命值',
+    skillCost: 3,
+    skillEffect: (gameState) => ({ playerHp: Math.min(gameState.maxPlayerHp, gameState.playerHp + 15) })
+  },
+  {
+    id: 'tank',
+    name: '铁笔卫',
+    desc: '防御型。初始血量+30。',
+    icon: <Mountain className="text-amber-700" />,
+    hpBonus: 30,
+    dmgBonus: -2, 
+    skillName: '铁壁',
+    skillDesc: '回复10血并获得防御',
+    skillCost: 4,
+    skillEffect: (gameState) => ({ playerHp: Math.min(gameState.maxPlayerHp + 30, gameState.playerHp + 10) }) 
+  }
+];
+
+const MONSTER_TYPES = [
+  { name: '墨迹妖', icon: '👾', desc: '怕水清洗', hpScale: 1.2, weakness: 'water' },
+  { name: '错别鬼', icon: '👻', desc: '怕用心检查', hpScale: 1.5, weakness: 'mind' },
+  { name: '涂鸦怪', icon: '👺', desc: '怕被擦除(土掩)', hpScale: 1.0, weakness: 'earth' },
+  { name: '生僻兽', icon: '🐲', desc: '无弱点', hpScale: 2.0, weakness: 'none' },
+];
+
+const k = (...args) => args.sort().join('');
+
+const COMBINATION_DB = {
+  // === 左右结构 (lr) ===
+  [k('讠','正')]: { char: '证', power: 15, desc: '证据', type: 'mind', struct: 'lr' },
+  [k('氵','工')]: { char: '江', power: 15, desc: '江水', type: 'water', struct: 'lr' },
+  [k('氵','可')]: { char: '河', power: 15, desc: '河流', type: 'water', struct: 'lr' },
+  [k('氵','胡')]: { char: '湖', power: 15, desc: '湖泊', type: 'water', struct: 'lr' },
+  [k('氵','每')]: { char: '海', power: 15, desc: '大海', type: 'water', struct: 'lr' },
+  [k('氵','羊')]: { char: '洋', power: 15, desc: '海洋', type: 'water', struct: 'lr' },
+  [k('氵','干')]: { char: '汗', power: 15, desc: '汗水', type: 'water', struct: 'lr' },
+  [k('氵','目')]: { char: '泪', power: 15, desc: '眼泪', type: 'water', struct: 'lr' },
+  [k('氵','先')]: { char: '洗', power: 15, desc: '清洗', type: 'water', struct: 'lr' },
+  [k('氵','气')]: { char: '汽', power: 15, desc: '汽水', type: 'water', struct: 'lr' },
+  [k('氵','永')]: { char: '泳', power: 15, desc: '游泳', type: 'water', struct: 'lr' },
+  [k('氵','少')]: { char: '沙', power: 15, desc: '沙子', type: 'earth', struct: 'lr' },
+  [k('氵','舌')]: { char: '活', power: 15, desc: '生活', type: 'life', struct: 'lr' },
+  [k('氵','去')]: { char: '法', power: 15, desc: '办法', type: 'mind', struct: 'lr' },
+  [k('氵','炎')]: { char: '淡', power: 15, desc: '平淡', type: 'water', struct: 'lr' },
+  [k('氵','主')]: { char: '注', power: 15, desc: '注意', type: 'mind', struct: 'lr' },
+
+  [k('亻','尔')]: { char: '你', power: 12, desc: '你我', type: 'normal', struct: 'lr' },
+  [k('亻','也')]: { char: '他', power: 12, desc: '他人', type: 'normal', struct: 'lr' },
+  [k('亻','门')]: { char: '们', power: 12, desc: '我们', type: 'normal', struct: 'lr' },
+  [k('亻','十')]: { char: '什', power: 12, desc: '什么', type: 'normal', struct: 'lr' },
+  [k('亻','故')]: { char: '做', power: 15, desc: '做事', type: 'action', struct: 'lr' },
+  [k('亻','乍')]: { char: '作', power: 15, desc: '作业', type: 'action', struct: 'lr' },
+  [k('亻','言')]: { char: '信', power: 15, desc: '相信', type: 'mind', struct: 'lr' },
+  [k('亻','旦')]: { char: '但', power: 12, desc: '但是', type: 'normal', struct: 'lr' },
+  [k('亻','韦')]: { char: '伟', power: 18, desc: '伟大', type: 'epic', struct: 'lr' },
+  [k('亻','呆')]: { char: '保', power: 15, desc: '保护', type: 'defense', struct: 'lr' },
+  [k('亻','扁')]: { char: '偏', power: 12, desc: '偏心', type: 'normal', struct: 'lr' },
+  [k('亻','象')]: { char: '像', power: 15, desc: '好像', type: 'normal', struct: 'lr' },
+  [k('亻','亭')]: { char: '停', power: 12, desc: '停止', type: 'action', struct: 'lr' },
+  [k('亻','尤')]: { char: '优', power: 18, desc: '优秀', type: 'good', struct: 'lr' },
+  [k('亻','吏')]: { char: '使', power: 12, desc: '使用', type: 'action', struct: 'lr' },
+
+  [k('扌','丁')]: { char: '打', power: 15, desc: '打击', type: 'attack', struct: 'lr' },
+  [k('扌','包')]: { char: '抱', power: 12, desc: '拥抱', type: 'action', struct: 'lr' },
+  [k('扌','巴')]: { char: '把', power: 12, desc: '把握', type: 'action', struct: 'lr' },
+  [k('扌','爪')]: { char: '抓', power: 15, desc: '抓住', type: 'action', struct: 'lr' },
+  [k('扌','少')]: { char: '抄', power: 12, desc: '抄写', type: 'action', struct: 'lr' },
+  [k('扌','户')]: { char: '护', power: 15, desc: '爱护', type: 'defense', struct: 'lr' },
+  [k('扌','旦')]: { char: '担', power: 12, desc: '扁担', type: 'action', struct: 'lr' },
+  [k('扌','旨')]: { char: '指', power: 12, desc: '指示', type: 'action', struct: 'lr' },
+  [k('扌','寺')]: { char: '持', power: 12, desc: '坚持', type: 'action', struct: 'lr' },
+  [k('扌','圭')]: { char: '挂', power: 12, desc: '挂件', type: 'action', struct: 'lr' },
+  [k('扌','卓')]: { char: '掉', power: 12, desc: '掉落', type: 'action', struct: 'lr' },
+  [k('扌','卜')]: { char: '扑', power: 15, desc: '扑灭', type: 'attack', struct: 'lr' },
+  [k('扌','乃')]: { char: '扔', power: 15, desc: '扔球', type: 'attack', struct: 'lr' },
+  [k('禾','希')]: { char: '稀', power: 15, desc: '稀少', type: 'normal', struct: 'lr' }, 
+  [k('扌','隹')]: { char: '推', power: 15, desc: '推动', type: 'action', struct: 'lr' },
+  [k('扌','妾')]: { char: '接', power: 12, desc: '接受', type: 'normal', struct: 'lr' },
+
+  [k('讠','十')]: { char: '计', power: 15, desc: '计算', type: 'mind', struct: 'lr' },
+  [k('讠','丁')]: { char: '订', power: 12, desc: '订单', type: 'normal', struct: 'lr' },
+  [k('讠','人')]: { char: '认', power: 12, desc: '认识', type: 'mind', struct: 'lr' },
+  [k('讠','上')]: { char: '让', power: 12, desc: '让步', type: 'normal', struct: 'lr' },
+  [k('讠','只')]: { char: '识', power: 12, desc: '知识', type: 'mind', struct: 'lr' },
+  [k('讠','义')]: { char: '议', power: 12, desc: '议论', type: 'normal', struct: 'lr' },
+  [k('讠','己')]: { char: '记', power: 15, desc: '记忆', type: 'mind', struct: 'lr' },
+  [k('讠','井')]: { char: '讲', power: 12, desc: '讲话', type: 'sound', struct: 'lr' },
+  [k('讠','午')]: { char: '许', power: 12, desc: '许多', type: 'normal', struct: 'lr' },
+  [k('讠','兑')]: { char: '说', power: 12, desc: '说话', type: 'sound', struct: 'lr' },
+  [k('讠','卖')]: { char: '读', power: 15, desc: '读书', type: 'mind', struct: 'lr' },
+  [k('讠','寺')]: { char: '诗', power: 18, desc: '诗歌', type: 'good', struct: 'lr' },
+  [k('讠','吾')]: { char: '语', power: 15, desc: '语言', type: 'sound', struct: 'lr' },
+  [k('讠','射')]: { char: '谢', power: 15, desc: '谢谢', type: 'good', struct: 'lr' },
+  [k('讠','青')]: { char: '请', power: 12, desc: '请客', type: 'normal', struct: 'lr' },
+  [k('讠','果')]: { char: '课', power: 15, desc: '上课', type: 'mind', struct: 'lr' },
+
+  [k('木','寸')]: { char: '村', power: 12, desc: '村庄', type: 'wood', struct: 'lr' },
+  [k('木','才')]: { char: '材', power: 15, desc: '材料', type: 'wood', struct: 'lr' },
+  [k('木','反')]: { char: '板', power: 12, desc: '木板', type: 'wood', struct: 'lr' },
+  [k('木','及')]: { char: '极', power: 18, desc: '极致', type: 'epic', struct: 'lr' },
+  [k('木','支')]: { char: '枝', power: 12, desc: '树枝', type: 'wood', struct: 'lr' },
+  [k('木','不')]: { char: '杯', power: 12, desc: '杯子', type: 'normal', struct: 'lr' },
+  [k('木','风')]: { char: '枫', power: 15, desc: '枫叶', type: 'wood', struct: 'lr' },
+  [k('木','几')]: { char: '机', power: 15, desc: '机器', type: 'tech', struct: 'lr' },
+  [k('木','交')]: { char: '校', power: 15, desc: '学校', type: 'mind', struct: 'lr' },
+  [k('木','卯')]: { char: '柳', power: 15, desc: '柳树', type: 'wood', struct: 'lr' },
+  [k('木','对')]: { char: '树', power: 15, desc: '大树', type: 'wood', struct: 'lr' },
+  [k('木','昆')]: { char: '棍', power: 18, desc: '棍棒', type: 'attack', struct: 'lr' },
+  [k('木','帛')]: { char: '棉', power: 15, desc: '棉花', type: 'normal', struct: 'lr' },
+  [k('木','艮')]: { char: '根', power: 15, desc: '树根', type: 'wood', struct: 'lr' },
+  [k('木','林')]: { char: '彬', power: 18, desc: '彬彬有礼', type: 'good', struct: 'lr' },
+
+  [k('口','昌')]: { char: '唱', power: 15, desc: '唱歌', type: 'sound', struct: 'lr' },
+  [k('口','乞')]: { char: '吃', power: 15, desc: '吃饭', type: 'heal', struct: 'lr' },
+  [k('口','斤')]: { char: '听', power: 15, desc: '听讲', type: 'mind', struct: 'lr' },
+  [k('口','欠')]: { char: '吹', power: 12, desc: '吹风', type: 'sound', struct: 'lr' },
+  [k('口','十')]: { char: '叶', power: 12, desc: '叶子', type: 'wood', struct: 'lr' },
+  [k('口','尼')]: { char: '呢', power: 10, desc: '语气词', type: 'normal', struct: 'lr' },
+  [k('口','那')]: { char: '哪', power: 10, desc: '哪里', type: 'normal', struct: 'lr' },
+  [k('口','牙')]: { char: '呀', power: 10, desc: '语气词', type: 'normal', struct: 'lr' },
+  [k('口','未')]: { char: '味', power: 15, desc: '味道', type: 'normal', struct: 'lr' },
+  [k('口','亢')]: { char: '吭', power: 12, desc: '吭声', type: 'sound', struct: 'lr' },
+
+  [k('女','子')]: { char: '好', power: 20, desc: '美好', type: 'heal', struct: 'lr' },
+  [k('女','马')]: { char: '妈', power: 15, desc: '妈妈', type: 'good', struct: 'lr' },
+  [k('女','乃')]: { char: '奶', power: 15, desc: '奶奶', type: 'heal', struct: 'lr' },
+  [k('女','且')]: { char: '姐', power: 15, desc: '姐姐', type: 'normal', struct: 'lr' },
+  [k('女','未')]: { char: '妹', power: 15, desc: '妹妹', type: 'normal', struct: 'lr' },
+  [k('女','古')]: { char: '姑', power: 15, desc: '姑娘', type: 'normal', struct: 'lr' },
+  [k('女','也')]: { char: '她', power: 12, desc: '她', type: 'normal', struct: 'lr' },
+  [k('女','少')]: { char: '妙', power: 18, desc: '奇妙', type: 'good', struct: 'lr' },
+  [k('女','乔')]: { char: '娇', power: 15, desc: '娇气', type: 'normal', struct: 'lr' },
+  [k('女','胥')]: { char: '婿', power: 15, desc: '女婿', type: 'normal', struct: 'lr' },
+
+  [k('土','也')]: { char: '地', power: 15, desc: '大地', type: 'earth', struct: 'lr' },
+  [k('土','鬼')]: { char: '块', power: 15, desc: '石块', type: 'earth', struct: 'lr' },
+  [k('土','不')]: { char: '坏', power: 15, desc: '坏人', type: 'attack', struct: 'lr' },
+  [k('土','皮')]: { char: '坡', power: 15, desc: '山坡', type: 'earth', struct: 'lr' },
+  [k('土','申')]: { char: '坤', power: 20, desc: '乾坤', type: 'epic', struct: 'lr' },
+
+  // === 上下结构 (tb) ===
+  [k('艹','化')]: { char: '花', power: 15, desc: '花朵', type: 'wood', struct: 'tb' },
+  [k('艹','早')]: { char: '草', power: 15, desc: '小草', type: 'wood', struct: 'tb' },
+  [k('艹','采')]: { char: '菜', power: 15, desc: '蔬菜', type: 'heal', struct: 'tb' },
+  [k('艹','田')]: { char: '苗', power: 12, desc: '禾苗', type: 'wood', struct: 'tb' },
+  [k('艹','牙')]: { char: '芽', power: 12, desc: '发芽', type: 'wood', struct: 'tb' },
+  [k('艹','平')]: { char: '苹', power: 15, desc: '苹果', type: 'heal', struct: 'tb' },
+  [k('艹','古')]: { char: '苦', power: 15, desc: '辛苦', type: 'normal', struct: 'tb' },
+  [k('艹','余')]: { char: '茶', power: 15, desc: '喝茶', type: 'heal', struct: 'tb' },
+  [k('艹','汤')]: { char: '荡', power: 15, desc: '荡漾', type: 'water', struct: 'tb' },
+  [k('艹','宣')]: { char: '萱', power: 15, desc: '萱草', type: 'wood', struct: 'tb' },
+  [k('艹','央')]: { char: '英', power: 18, desc: '英雄', type: 'good', struct: 'tb' },
+  [k('艹','分')]: { char: '芬', power: 15, desc: '芬芳', type: 'wood', struct: 'tb' },
+  [k('艹','方')]: { char: '芳', power: 15, desc: '芳香', type: 'wood', struct: 'tb' },
+  [k('艹','节')]: { char: '节', power: 15, desc: '节日', type: 'normal', struct: 'tb' },
+  [k('艹','乙')]: { char: '艺', power: 15, desc: '艺术', type: 'mind', struct: 'tb' },
+
+  [k('宀','玉')]: { char: '宝', power: 20, desc: '宝贝', type: 'gold', struct: 'tb' },
+  [k('宀','豕')]: { char: '家', power: 15, desc: '家庭', type: 'defense', struct: 'tb' },
+  [k('宀','女')]: { char: '安', power: 15, desc: '安全', type: 'defense', struct: 'tb' },
+  [k('宀','子')]: { char: '字', power: 15, desc: '汉字', type: 'mind', struct: 'tb' },
+  [k('宀','元')]: { char: '完', power: 15, desc: '完成', type: 'normal', struct: 'tb' },
+  [k('宀','谷')]: { char: '容', power: 15, desc: '容易', type: 'normal', struct: 'tb' },
+  [k('宀','各')]: { char: '客', power: 15, desc: '客人', type: 'normal', struct: 'tb' },
+  [k('宀','丁')]: { char: '宁', power: 15, desc: '安宁', type: 'heal', struct: 'tb' },
+  [k('宀','申')]: { char: '审', power: 15, desc: '审查', type: 'mind', struct: 'tb' },
+  [k('宀','木')]: { char: '宋', power: 12, desc: '宋朝', type: 'normal', struct: 'tb' },
+  [k('宀','宅')]: { char: '宅', power: 12, desc: '住宅', type: 'earth', struct: 'tb' },
+  [k('宀','见')]: { char: '觉', power: 15, desc: '感觉', type: 'mind', struct: 'tb' },
+  [k('宀','奇')]: { char: '寄', power: 15, desc: '寄信', type: 'action', struct: 'tb' },
+  [k('宀','寸')]: { char: '守', power: 18, desc: '守护', type: 'defense', struct: 'tb' },
+  [k('宀','吕')]: { char: '宫', power: 18, desc: '宫殿', type: 'epic', struct: 'tb' },
+
+  [k('⺮','毛')]: { char: '笔', power: 15, desc: '毛笔', type: 'mind', struct: 'tb' },
+  [k('⺮','官')]: { char: '管', power: 15, desc: '管理', type: 'mind', struct: 'tb' },
+  [k('⺮','干')]: { char: '竿', power: 12, desc: '竹竿', type: 'wood', struct: 'tb' },
+  [k('⺮','合')]: { char: '答', power: 15, desc: '回答', type: 'sound', struct: 'tb' },
+  [k('⺮','寺')]: { char: '等', power: 12, desc: '等待', type: 'time', struct: 'tb' },
+  [k('⺮','本')]: { char: '笨', power: 10, desc: '笨拙', type: 'normal', struct: 'tb' },
+  [k('⺮','夭')]: { char: '笑', power: 15, desc: '微笑', type: 'heal', struct: 'tb' },
+  [k('⺮','匡')]: { char: '筐', power: 12, desc: '竹筐', type: 'normal', struct: 'tb' },
+  [k('⺮','间')]: { char: '简', power: 15, desc: '简单', type: 'normal', struct: 'tb' },
+  [k('⺮','旬')]: { char: '笋', power: 15, desc: '竹笋', type: 'wood', struct: 'tb' },
+
+  [k('田','心')]: { char: '思', power: 15, desc: '思考', type: 'mind', struct: 'tb' },
+  [k('相','心')]: { char: '想', power: 15, desc: '想念', type: 'mind', struct: 'tb' },
+  [k('今','心')]: { char: '念', power: 15, desc: '念书', type: 'mind', struct: 'tb' },
+  [k('亡','心')]: { char: '忘', power: 15, desc: '忘记', type: 'mind', struct: 'tb' },
+  [k('音','心')]: { char: '意', power: 15, desc: '意思', type: 'mind', struct: 'tb' },
+  [k('中','心')]: { char: '忠', power: 18, desc: '忠诚', type: 'good', struct: 'tb' },
+  [k('勿','心')]: { char: '忽', power: 12, desc: '忽然', type: 'time', struct: 'tb' },
+  [k('刍','心')]: { char: '急', power: 15, desc: '着急', type: 'action', struct: 'tb' },
+  [k('自','心')]: { char: '息', power: 15, desc: '休息', type: 'heal', struct: 'tb' },
+  [k('奴','心')]: { char: '怒', power: 20, desc: '发怒', type: 'attack', struct: 'tb' },
+
+  [k('口','贝')]: { char: '员', power: 12, desc: '员工', type: 'normal', struct: 'tb' },
+  [k('分','贝')]: { char: '贫', power: 10, desc: '贫穷', type: 'normal', struct: 'tb' },
+  [k('今','贝')]: { char: '贪', power: 10, desc: '贪心', type: 'normal', struct: 'tb' },
+  [k('化','贝')]: { char: '货', power: 15, desc: '货物', type: 'gold', struct: 'tb' },
+  [k('工','贝')]: { char: '贡', power: 15, desc: '贡献', type: 'good', struct: 'tb' },
+  [k('加','贝')]: { char: '贺', power: 15, desc: '祝贺', type: 'good', struct: 'tb' },
+  [k('代','贝')]: { char: '贷', power: 15, desc: '贷款', type: 'gold', struct: 'tb' },
+  [k('次','贝')]: { char: '资', power: 15, desc: '资源', type: 'gold', struct: 'tb' },
+  [k('尚','贝')]: { char: '赏', power: 18, desc: '奖赏', type: 'gold', struct: 'tb' },
+  [k('西','贝')]: { char: '贾', power: 12, desc: '商贾', type: 'gold', struct: 'tb' },
+
+  [k('雨','田')]: { char: '雷', power: 25, desc: '雷电', type: 'attack', struct: 'tb' },
+  [k('雨','务')]: { char: '雾', power: 15, desc: '迷雾', type: 'water', struct: 'tb' },
+  [k('雨','相')]: { char: '霜', power: 18, desc: '冰霜', type: 'water', struct: 'tb' },
+  [k('雨','令')]: { char: '零', power: 12, desc: '零度', type: 'water', struct: 'tb' },
+  [k('雨','包')]: { char: '雹', power: 20, desc: '冰雹', type: 'attack', struct: 'tb' },
+
+  [k('穴','工')]: { char: '空', power: 15, desc: '天空', type: 'air', struct: 'tb' },
+  [k('穴','牙')]: { char: '穿', power: 15, desc: '穿越', type: 'action', struct: 'tb' },
+  [k('穴','力')]: { char: '穷', power: 10, desc: '贫穷', type: 'normal', struct: 'tb' },
+  [k('穴','九')]: { char: '究', power: 15, desc: '研究', type: 'mind', struct: 'tb' },
+  [k('穴','犬')]: { char: '突', power: 18, desc: '突然', type: 'action', struct: 'tb' },
+
+  [k('分','皿')]: { char: '盆', power: 12, desc: '脸盆', type: 'normal', struct: 'tb' },
+  [k('舟','皿')]: { char: '盘', power: 15, desc: '盘子', type: 'normal', struct: 'tb' },
+  [k('成','皿')]: { char: '盛', power: 15, desc: '盛开', type: 'wood', struct: 'tb' },
+  [k('合','皿')]: { char: '盒', power: 12, desc: '盒子', type: 'normal', struct: 'tb' },
+  [k('羊','皿')]: { char: '盖', power: 15, desc: '盖子', type: 'defense', struct: 'tb' },
+
+  [k('田','力')]: { char: '男', power: 15, desc: '男人', type: 'normal', struct: 'tb' },
+  [k('父','巴')]: { char: '爸', power: 15, desc: '爸爸', type: 'normal', struct: 'tb' },
+  [k('小','大')]: { char: '尖', power: 15, desc: '尖锐', type: 'sharp', struct: 'tb' },
+  [k('小','土')]: { char: '尘', power: 12, desc: '尘土', type: 'earth', struct: 'tb' },
+  [k('不','正')]: { char: '歪', power: 12, desc: '歪斜', type: 'normal', struct: 'tb' },
+  [k('山','石')]: { char: '岩', power: 18, desc: '岩石', type: 'earth', struct: 'tb' },
+  [k('日','生')]: { char: '星', power: 20, desc: '星星', type: 'light', struct: 'tb' },
+  [k('日','十')]: { char: '早', power: 12, desc: '早晨', type: 'time', struct: 'tb' },
+  [k('日','一')]: { char: '旦', power: 15, desc: '元旦', type: 'time', struct: 'tb' },
+  [k('白','王')]: { char: '皇', power: 25, desc: '皇帝', type: 'epic', struct: 'tb' },
+  [k('白','水')]: { char: '泉', power: 15, desc: '泉水', type: 'water', struct: 'tb' },
+  [k('禾','日')]: { char: '香', power: 15, desc: '香气', type: 'good', struct: 'tb' },
+  [k('禾','子')]: { char: '季', power: 15, desc: '季节', type: 'time', struct: 'tb' },
+  [k('禾','女')]: { char: '委', power: 12, desc: '委托', type: 'normal', struct: 'tb' },
+  [k('木','口')]: { char: '杏', power: 12, desc: '杏子', type: 'wood', struct: 'tb' },
+  [k('口','木')]: { char: '呆', power: 10, desc: '发呆', type: 'mind', struct: 'tb' },
+  [k('木','子')]: { char: '李', power: 12, desc: '李子', type: 'wood', struct: 'tb' },
+  [k('利','木')]: { char: '梨', power: 12, desc: '梨子', type: 'wood', struct: 'tb' },
+  [k('甘','木')]: { char: '某', power: 10, desc: '某人', type: 'normal', struct: 'tb' },
+  [k('几','木')]: { char: '朵', power: 12, desc: '花朵', type: 'wood', struct: 'tb' },
+  [k('止','月')]: { char: '肯', power: 12, desc: '肯定', type: 'mind', struct: 'tb' },
+  [k('小','月')]: { char: '肖', power: 12, desc: '肖像', type: 'normal', struct: 'tb' },
+  [k('云','月')]: { char: '育', power: 15, desc: '教育', type: 'mind', struct: 'tb' },
+  [k('田','月')]: { char: '胃', power: 15, desc: '肠胃', type: 'body', struct: 'tb' },
+  [k('立','日')]: { char: '音', power: 15, desc: '音乐', type: 'sound', struct: 'tb' },
+
+  // === 包围/半包围结构 (sur) ===
+  [k('囗','玉')]: { char: '国', power: 20, desc: '国家', type: 'epic', struct: 'sur' },
+  [k('囗','才')]: { char: '团', power: 15, desc: '团结', type: 'good', struct: 'sur' },
+  [k('囗','元')]: { char: '园', power: 15, desc: '花园', type: 'wood', struct: 'sur' },
+  [k('囗','大')]: { char: '因', power: 12, desc: '因为', type: 'mind', struct: 'sur' },
+  [k('囗','古')]: { char: '固', power: 18, desc: '坚固', type: 'defense', struct: 'sur' },
+  [k('囗','木')]: { char: '困', power: 10, desc: '困难', type: 'mind', struct: 'sur' },
+  [k('囗','人')]: { char: '囚', power: 12, desc: '囚犯', type: 'normal', struct: 'sur' },
+  [k('囗','口')]: { char: '回', power: 15, desc: '回家', type: 'action', struct: 'sur' },
+  [k('囗','韦')]: { char: '围', power: 15, desc: '包围', type: 'defense', struct: 'sur' },
+  [k('囗','冬')]: { char: '图', power: 15, desc: '图书', type: 'mind', struct: 'sur' },
+  [k('囗','卷')]: { char: '圈', power: 15, desc: '圆圈', type: 'normal', struct: 'sur' },
+  [k('囗','员')]: { char: '圆', power: 15, desc: '圆形', type: 'normal', struct: 'sur' },
+  [k('囗','令')]: { char: '囹', power: 12, desc: '囹圄', type: 'normal', struct: 'sur' },
+  [k('囗','甫')]: { char: '圃', power: 15, desc: '苗圃', type: 'wood', struct: 'sur' },
+  [k('囗','屯')]: { char: '囤', power: 15, desc: '囤积', type: 'gold', struct: 'sur' },
+
+  [k('辶','井')]: { char: '进', power: 15, desc: '前进', type: 'action', struct: 'sur' },
+  [k('辶','寸')]: { char: '过', power: 12, desc: '过去', type: 'time', struct: 'sur' },
+  [k('辶','斤')]: { char: '近', power: 12, desc: '靠近', type: 'normal', struct: 'sur' },
+  [k('辶','元')]: { char: '远', power: 15, desc: '遥远', type: 'normal', struct: 'sur' },
+  [k('辶','力')]: { char: '边', power: 12, desc: '旁边', type: 'normal', struct: 'sur' },
+  [k('辶','千')]: { char: '迁', power: 15, desc: '迁移', type: 'action', struct: 'sur' },
+  [k('辶','文')]: { char: '这', power: 10, desc: '这里', type: 'normal', struct: 'sur' },
+  [k('辶','不')]: { char: '还', power: 12, desc: '归还', type: 'normal', struct: 'sur' },
+  [k('辶','车')]: { char: '连', power: 15, desc: '连接', type: 'normal', struct: 'sur' },
+  [k('辶','云')]: { char: '运', power: 15, desc: '运动', type: 'action', struct: 'sur' },
+  [k('辶','白')]: { char: '迫', power: 15, desc: '迫切', type: 'time', struct: 'sur' },
+  [k('辶','告')]: { char: '造', power: 18, desc: '创造', type: 'epic', struct: 'sur' },
+  [k('辶','兆')]: { char: '逃', power: 15, desc: '逃跑', type: 'action', struct: 'sur' },
+  [k('辶','米')]: { char: '迷', power: 12, desc: '迷路', type: 'mind', struct: 'sur' },
+  [k('辶','关')]: { char: '送', power: 15, desc: '赠送', type: 'good', struct: 'sur' },
+  [k('辶','首')]: { char: '道', power: 18, desc: '道路', type: 'earth', struct: 'sur' },
+  [k('辶','先')]: { char: '选', power: 15, desc: '选择', type: 'mind', struct: 'sur' },
+  [k('辶','舌')]: { char: '适', power: 15, desc: '合适', type: 'good', struct: 'sur' },
+  [k('辶','亦')]: { char: '迹', power: 15, desc: '痕迹', type: 'normal', struct: 'sur' },
+  [k('辶','巛')]: { char: '巡', power: 15, desc: '巡逻', type: 'action', struct: 'sur' },
+
+  [k('门','口')]: { char: '问', power: 12, desc: '问题', type: 'mind', struct: 'sur' },
+  [k('门','日')]: { char: '间', power: 12, desc: '时间', type: 'time', struct: 'sur' },
+  [k('门','人')]: { char: '闪', power: 18, desc: '闪电', type: 'light', struct: 'sur' },
+  [k('门','木')]: { char: '闲', power: 12, desc: '空闲', type: 'time', struct: 'sur' },
+  [k('门','耳')]: { char: '闻', power: 15, desc: '新闻', type: 'mind', struct: 'sur' },
+  [k('门','市')]: { char: '闹', power: 15, desc: '热闹', type: 'sound', struct: 'sur' },
+  [k('门','才')]: { char: '闭', power: 15, desc: '关闭', type: 'defense', struct: 'sur' },
+  [k('门','活')]: { char: '阔', power: 18, desc: '广阔', type: 'earth', struct: 'sur' },
+  [k('门','兑')]: { char: '阅', power: 15, desc: '阅读', type: 'mind', struct: 'sur' },
+  [k('门','马')]: { char: '闯', power: 20, desc: '闯荡', type: 'attack', struct: 'sur' },
+  [k('门','心')]: { char: '闷', power: 12, desc: '郁闷', type: 'mind', struct: 'sur' },
+  [k('门','圭')]: { char: '闺', power: 15, desc: '闺蜜', type: 'normal', struct: 'sur' },
+  [k('心','亚')]: { char: '恶', power: 20, desc: '凶恶', type: 'attack', struct: 'sur' }, 
+  [k('门','虫')]: { char: '闽', power: 15, desc: '福建', type: 'earth', struct: 'sur' },
+  [k('门','一')]: { char: '闩', power: 15, desc: '门闩', type: 'defense', struct: 'sur' },
+  [k('门','韦')]: { char: '闱', power: 12, desc: '科举', type: 'mind', struct: 'sur' },
+
+  [k('广','木')]: { char: '床', power: 15, desc: '起床', type: 'heal', struct: 'sur' },
+  [k('广','占')]: { char: '店', power: 15, desc: '商店', type: 'gold', struct: 'sur' },
+  [k('广','付')]: { char: '府', power: 18, desc: '府邸', type: 'defense', struct: 'sur' },
+  [k('广','坐')]: { char: '座', power: 15, desc: '座位', type: 'normal', struct: 'sur' },
+  [k('广','车')]: { char: '库', power: 18, desc: '仓库', type: 'gold', struct: 'sur' },
+  [k('广','林')]: { char: '麻', power: 15, desc: '麻烦', type: 'normal', struct: 'sur' },
+  [k('广','予')]: { char: '序', power: 15, desc: '顺序', type: 'normal', struct: 'sur' },
+  [k('广','大')]: { char: '庆', power: 18, desc: '庆祝', type: 'good', struct: 'sur' },
+  [k('广','土')]: { char: '庄', power: 15, desc: '庄严', type: 'earth', struct: 'sur' },
+  [k('广','廷')]: { char: '庭', power: 15, desc: '家庭', type: 'defense', struct: 'sur' },
+  [k('广','隶')]: { char: '康', power: 18, desc: '健康', type: 'heal', struct: 'sur' },
+  [k('广','发')]: { char: '废', power: 10, desc: '废弃', type: 'normal', struct: 'sur' },
+  [k('广','郎')]: { char: '廊', power: 15, desc: '走廊', type: 'normal', struct: 'sur' },
+  [k('广','吾')]: { char: '庸', power: 10, desc: '平庸', type: 'normal', struct: 'sur' },
+
+  [k('疒','丙')]: { char: '病', power: 10, desc: '生病', type: 'normal', struct: 'sur' },
+  [k('疒','甬')]: { char: '痛', power: 15, desc: '痛苦', type: 'attack', struct: 'sur' },
+  [k('疒','正')]: { char: '症', power: 12, desc: '症状', type: 'normal', struct: 'sur' },
+  [k('疒','风')]: { char: '疯', power: 18, desc: '疯狂', type: 'attack', struct: 'sur' },
+  [k('疒','羊')]: { char: '痒', power: 10, desc: '瘙痒', type: 'normal', struct: 'sur' },
+  [k('疒','艮')]: { char: '痕', power: 12, desc: '痕迹', type: 'normal', struct: 'sur' },
+  [k('疒','冬')]: { char: '疼', power: 15, desc: '疼痛', type: 'attack', struct: 'sur' },
+  [k('疒','知')]: { char: '痴', power: 12, desc: '痴迷', type: 'mind', struct: 'sur' },
+  [k('疒','皮')]: { char: '疲', power: 10, desc: '疲劳', type: 'normal', struct: 'sur' },
+
+  [k('尸','古')]: { char: '居', power: 15, desc: '居住', type: 'earth', struct: 'sur' },
+  [k('尸','出')]: { char: '屈', power: 15, desc: '委屈', type: 'mind', struct: 'sur' },
+  [k('尸','毛')]: { char: '尾', power: 12, desc: '尾巴', type: 'body', struct: 'sur' },
+  [k('尸','至')]: { char: '屋', power: 15, desc: '房屋', type: 'defense', struct: 'sur' },
+  [k('尸','水')]: { char: '尿', power: 10, desc: '...', type: 'water', struct: 'sur' },
+  [k('尸','云')]: { char: '层', power: 15, desc: '楼层', type: 'earth', struct: 'sur' },
+  [k('尸','由')]: { char: '届', power: 12, desc: '届时', type: 'time', struct: 'sur' },
+  [k('尸','米')]: { char: '屎', power: 10, desc: '...', type: 'earth', struct: 'sur' },
+  [k('尸','肖')]: { char: '屑', power: 10, desc: '纸屑', type: 'normal', struct: 'sur' },
+
+  [k('走','己')]: { char: '起', power: 15, desc: '起床', type: 'action', struct: 'sur' },
+  [k('走','干')]: { char: '赶', power: 15, desc: '赶路', type: 'action', struct: 'sur' },
+  [k('走','召')]: { char: '超', power: 18, desc: '超级', type: 'epic', struct: 'sur' },
+  [k('走','取')]: { char: '趣', power: 15, desc: '有趣', type: 'good', struct: 'sur' },
+  [k('走','肖')]: { char: '赵', power: 15, desc: '赵国', type: 'normal', struct: 'sur' },
+  [k('走','戉')]: { char: '越', power: 18, desc: '超越', type: 'action', struct: 'sur' },
+  [k('走','尚')]: { char: '趟', power: 12, desc: '一趟', type: 'action', struct: 'sur' },
+
+  [k('勹','巳')]: { char: '包', power: 15, desc: '书包', type: 'normal', struct: 'sur' },
+  [k('勹','口')]: { char: '句', power: 12, desc: '句子', type: 'mind', struct: 'sur' },
+  [k('勹','一')]: { char: '勺', power: 12, desc: '勺子', type: 'normal', struct: 'sur' },
+  [k('几','乂')]: { char: '风', power: 15, desc: '大风', type: 'air', struct: 'sur' },
+  [k('几','又')]: { char: '凤', power: 20, desc: '凤凰', type: 'epic', struct: 'sur' },
+  [k('匚','矢')]: { char: '医', power: 18, desc: '医生', type: 'heal', struct: 'sur' },
+  [k('匚','乂')]: { char: '区', power: 15, desc: '区域', type: 'earth', struct: 'sur' },
+  [k('匚','儿')]: { char: '匹', power: 12, desc: '匹配', type: 'normal', struct: 'sur' },
+
+  // === 三字组合 (史诗结构) ===
+  [k('又','女','心')]: { char: '怒', power: 35, desc: '愤怒', type: 'epic', struct: 'tb' },
+  [k('木','木','木')]: { char: '森', power: 35, desc: '森林', type: 'epic', struct: 'tri' },
+  [k('口','口','口')]: { char: '品', power: 30, desc: '品质', type: 'epic', struct: 'tri' },
+  [k('火','火','火')]: { char: '焱', power: 45, desc: '烈焰', type: 'epic', struct: 'tri' },
+  [k('土','土','土')]: { char: '垚', power: 40, desc: '高耸', type: 'epic', struct: 'tri' },
+  [k('又','又','又')]: { char: '叒', power: 35, desc: '同心', type: 'epic', struct: 'tri' },
+  [k('心','相')]: { char: '想', power: 30, desc: '梦想', type: 'epic', struct: 'tb' },
+};
+
+// 提取所有用到的部件
+const RADICAL_DECK = [
+  // 基础
+  '氵', '亻', '讠', '木', '口', '女', '土', '扌', 
+  // 结构部件
+  '艹', '宀', '⺮', '心', '贝', '雨', '穴', '皿', '囗', '辶', '门', '广', '疒', '尸', '走', '勹',
+  // 常用独体字
+  '工', '可', '胡', '每', '羊', '干', '目', '先', '气', '永', '少', '舌', '去', '炎', '主',
+  '尔', '也', '十', '故', '乍', '言', '旦', '韦', '呆', '扁', '象', '亭', '尤', '吏',
+  '丁', '包', '巴', '爪', '户', '旨', '寺', '圭', '卓', '卜', '乃', '隹', '妾',
+  '人', '上', '只', '义', '己', '井', '午', '兑', '卖', '吾', '射', '青', '果',
+  '寸', '才', '反', '及', '支', '不', '风', '几', '交', '卯', '对', '昆', '帛', '艮', '林',
+  '昌', '乞', '斤', '欠', '尼', '那', '牙', '未', '亢',
+  '子', '马', '且', '古', '乔', '胥', '鬼', '皮', '申',
+  '化', '早', '采', '田', '平', '余', '汤', '宣', '央', '分', '方', '节', '乙',
+  '玉', '豕', '元', '谷', '各', '宅', '见', '奇', '吕',
+  '毛', '官', '合', '本', '夭', '匡', '间', '旬',
+  '相', '今', '亡', '音', '中', '勿', '刍', '自', '奴',
+  '化', '加', '代', '次', '尚', '西',
+  '务', '令', '九', '犬', '舟', '成', '立', '父', '小', '大', '山', '石', '日', '生', '一', '白', '水', '禾', '利', '甘', '止', '云',
+  '卷', '员', '甫', '屯',
+  '千', '文', '车', '告', '兆', '米', '关', '首', '选', '亦', '巛',
+  '耳', '市', '活', '虫',
+  '占', '付', '坐', '予', '廷', '隶', '发', '郎',
+  '丙', '甬', '正', '知',
+  '出', '至', '由', '肖',
+  '起', '召', '取', '戉',
+  '巳', '矢', '儿', '希'
+];
+
+const MAX_HINTS = 5;
+const SAVE_KEY = 'hanzi_magic_v4_expert';
+
+// --- 辅助组件：结构图标 ---
+const StructureIcon = ({ type, size=16 }) => {
+  const style = { width: size, height: size };
+  switch(type) {
+    case 'lr': return <MoveRight style={style} className="text-stone-400" title="左右结构" />; // 左右
+    case 'tb': return <Layers style={style} className="text-stone-400" title="上下结构" />; // 上下
+    case 'sur': return <Box style={style} className="text-stone-400" title="包围结构" />; // 包围
+    case 'tri': return <span className="text-[10px] font-bold text-amber-500">品</span>; // 品字
+    default: return null;
+  }
+};
+
+// --- 组件 ---
+
+const Card = ({ char, selected, onClick, disabled, isHinted }) => (
+  <button
+    onClick={() => {
+      if (!disabled) {
+        playSound('select');
+        onClick(char);
+      }
+    }}
+    className={`
+      relative w-12 h-16 sm:w-14 sm:h-20 md:w-16 md:h-24 rounded-lg border-2 shadow-md transition-all duration-200 flex items-center justify-center text-2xl md:text-3xl font-serif select-none touch-manipulation
+      ${selected 
+        ? 'bg-amber-100 border-amber-600 -translate-y-3 shadow-amber-500/50 z-10' 
+        : isHinted 
+          ? 'bg-yellow-50 border-yellow-400 ring-2 ring-yellow-400 ring-offset-1 animate-pulse'
+          : 'bg-stone-50 border-stone-300 active:scale-95 hover:-translate-y-1 hover:border-stone-400 text-stone-800'}
+      ${disabled ? 'opacity-50 cursor-not-allowed grayscale' : 'cursor-pointer'}
+    `}
+  >
+    <div className="absolute top-0.5 left-1 text-[8px] text-stone-400">部首</div>
+    {char}
+  </button>
+);
+
+const Monster = ({ level, hp, maxHp, isAttacking, onHitAnim, turn, monsterType }) => (
+  <div className="flex flex-col items-center justify-center relative w-full">
+    {/* 怪物血条 */}
+    <div className="w-3/4 max-w-xs h-3 md:h-4 bg-stone-800 rounded-full mb-4 overflow-hidden border border-stone-600 relative">
+      <div 
+        className="h-full bg-red-600 transition-all duration-300"
+        style={{ width: `${(hp / maxHp) * 100}%` }}
+      />
+    </div>
+
+    {/* 怪物形象 */}
+    <div className={`
+      w-28 h-28 md:w-48 md:h-48 bg-stone-800 rounded-2xl flex items-center justify-center text-6xl md:text-8xl shadow-2xl border-4 transition-transform duration-300 relative
+      ${isAttacking ? 'translate-y-12 scale-110 z-20 shadow-red-500/50' : ''}
+      ${onHitAnim ? 'shake-animation bg-red-900' : ''}
+      ${turn === 'enemy' ? 'border-red-500 shadow-red-500/50 scale-105' : 'border-stone-600'}
+    `}>
+      <span className="filter drop-shadow-lg animate-bounce-slow">
+        {monsterType.icon}
+      </span>
+      {turn === 'enemy' && (
+        <div className="absolute -top-10 text-red-600 font-bold animate-pulse text-lg">蓄力中...</div>
+      )}
+      {/* 弱点提示 */}
+      <div className="absolute -right-4 bottom-0 bg-white border border-stone-300 px-2 py-1 rounded text-[10px] text-stone-500 shadow">
+        弱点: {monsterType.weakness === 'none' ? '无' : 
+               monsterType.weakness === 'water' ? '氵' :
+               monsterType.weakness === 'earth' ? '土' :
+               monsterType.weakness === 'mind' ? '心' : '无'}
+      </div>
+    </div>
+    
+    <div className="mt-4 text-center bg-white/80 px-4 py-2 rounded-lg shadow-sm backdrop-blur-sm">
+      <div className="font-bold text-stone-700 text-lg flex items-center justify-center gap-2">
+        <span>Lv.{level} {monsterType.name}</span>
+      </div>
+      <div className="text-xs text-stone-500 mt-1">{monsterType.desc}</div>
+      <div className="text-xs font-mono text-stone-400 mt-1">HP: {hp}/{maxHp}</div>
+    </div>
+  </div>
+);
+
+const FloatingText = ({ text, type, rarity }) => {
+  let colorClass = 'text-green-600';
+  let sizeClass = 'text-2xl';
+  let shadowClass = '';
+
+  if (type === 'damage') {
+    if (rarity === 'crit') { // 暴击特效
+      colorClass = 'text-purple-600';
+      sizeClass = 'text-5xl md:text-7xl';
+      shadowClass = 'drop-shadow-[0_0_10px_rgba(147,51,234,0.5)]';
+    } else if (rarity === 'epic') {
+      colorClass = 'text-amber-500';
+      sizeClass = 'text-5xl md:text-7xl';
+      shadowClass = 'drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)]';
+    } else if (rarity === 'rare') {
+      colorClass = 'text-indigo-600';
+      sizeClass = 'text-4xl md:text-6xl';
+      shadowClass = 'drop-shadow-md';
+    } else {
+      colorClass = 'text-red-600';
+      sizeClass = 'text-3xl md:text-5xl';
+    }
+  } else if (type === 'heal') {
+    colorClass = 'text-green-500';
+    sizeClass = 'text-3xl md:text-5xl';
+  } else if (type === 'block') {
+    colorClass = 'text-stone-500';
+    sizeClass = 'text-2xl';
+  } else if (type === 'info') {
+    colorClass = 'text-blue-600';
+    sizeClass = 'text-xl';
+  }
+
+  return (
+    <div className={`
+      absolute z-50 font-bold animate-float-up pointer-events-none whitespace-nowrap ${colorClass} ${sizeClass} ${shadowClass}
+    `} style={{ top: '40%', left: '50%', transform: 'translate(-50%, -50%)' }}>
+      {text}
+    </div>
+  );
+};
+
+// --- 战斗日志组件 ---
+const BattleLogModal = ({ logs, onClose }) => {
+  const scrollRef = useRef(null);
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [logs]);
+
+  return (
+    <div className="fixed inset-0 bg-stone-900/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white w-full max-w-md h-[60vh] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-fade-in">
+        <div className="p-3 bg-stone-100 border-b flex justify-between items-center">
+          <h3 className="font-bold flex items-center gap-2"><FileText size={18}/> 战斗记录</h3>
+          <button onClick={onClose}><X size={20}/></button>
+        </div>
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2 bg-stone-50 font-mono text-sm">
+          {logs.length === 0 && <div className="text-stone-400 text-center italic mt-10">战斗才刚刚开始...</div>}
+          {logs.map(log => (
+            <div key={log.id} className={`p-2 rounded border-l-2 ${
+              log.type === 'player' ? 'border-blue-500 bg-blue-50' : 
+              log.type === 'enemy' ? 'border-red-500 bg-red-50' : 
+              'border-stone-400 bg-stone-100'
+            }`}>
+              <span className="text-xs text-stone-400 mr-2">{log.time}</span>
+              {log.text}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- 主程序 ---
+export default function HanziMagicBattle() {
+  const [scene, setScene] = useState('menu'); 
+  const [character, setCharacter] = useState(CHARACTERS[0]);
+  const [playerHp, setPlayerHp] = useState(100);
+  const [maxPlayerHp, setMaxPlayerHp] = useState(100);
+  const [mp, setMp] = useState(3); 
+  const [hand, setHand] = useState([]);
+  const [selectedIndices, setSelectedIndices] = useState([]);
+  const [level, setLevel] = useState(1);
+  const [monsterHp, setMonsterHp] = useState(50);
+  const [maxMonsterHp, setMaxMonsterHp] = useState(50);
+  const [currentMonster, setCurrentMonster] = useState(MONSTER_TYPES[0]);
+  const [shield, setShield] = useState(0); 
+  
+  const [turn, setTurn] = useState('player'); 
+  const [gameStatus, setGameStatus] = useState('playing'); 
+  const [comboResult, setComboResult] = useState(null);
+  const [hintIndices, setHintIndices] = useState([]);
+  const [hintsLeft, setHintsLeft] = useState(3);
+  
+  const [floatingTexts, setFloatingTexts] = useState([]);
+  const [monsterHit, setMonsterHit] = useState(false);
+  const [monsterAttacking, setMonsterAttacking] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  const [discoveredWords, setDiscoveredWords] = useState([]);
+  const [highScore, setHighScore] = useState(0);
+  const [battleLogs, setBattleLogs] = useState([]);
+  const [showLogs, setShowLogs] = useState(false);
+  const [showDictionary, setShowDictionary] = useState(false);
+
+  // --- 逻辑 ---
+  const idCounter = useRef(0);
+  const getUniqueId = () => {
+    idCounter.current += 1;
+    return `${Date.now()}_${idCounter.current}`;
+  };
+
+  const addLog = (text, type = 'info') => {
+    const time = new Date().toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setBattleLogs(prev => [...prev, { id: getUniqueId(), text, type, time }]);
+  };
+
+  const findFirstValidCombo = (cards) => {
+    const cardChars = cards.map(c => c.char);
+    for (let i = 0; i < cardChars.length; i++) {
+      for (let j = i + 1; j < cardChars.length; j++) {
+        const key = [cardChars[i], cardChars[j]].sort().join('');
+        if (COMBINATION_DB[key]) return [i, j];
+      }
+    }
+    // Check 3 chars
+    for (let i = 0; i < cardChars.length; i++) {
+      for (let j = i + 1; j < cardChars.length; j++) {
+        for (let k = j + 1; k < cardChars.length; k++) {
+          const key = [cardChars[i], cardChars[j], cardChars[k]].sort().join('');
+          if (COMBINATION_DB[key]) return [i, j, k];
+        }
+      }
+    }
+    return null;
+  };
+
+  const drawCards = useCallback((currentHand, count) => {
+    let newCards = [];
+    for (let i = 0; i < count; i++) {
+      const randomIndex = Math.floor(Math.random() * RADICAL_DECK.length);
+      newCards.push({
+        id: Math.random().toString(36).substr(2, 9),
+        char: RADICAL_DECK[randomIndex]
+      });
+    }
+
+    const potentialHand = [...currentHand, ...newCards];
+    const hasSolution = findFirstValidCombo(potentialHand);
+
+    if (!hasSolution && potentialHand.length >= 2) {
+      const keys = Object.keys(COMBINATION_DB);
+      let validKeys = keys.filter(k => k.length <= 2);
+      if (validKeys.length === 0) validKeys = keys;
+      
+      const randomKey = validKeys[Math.floor(Math.random() * validKeys.length)];
+      const guaranteedChars = randomKey.split('');
+      
+      let replaceCount = 0;
+      for (let i = guaranteedChars.length - 1; i >= 0; i--) {
+        if (newCards.length > replaceCount) {
+          newCards[newCards.length - 1 - replaceCount].char = guaranteedChars[i];
+          replaceCount++;
+        }
+      }
+    }
+    return newCards;
+  }, []);
+
+  useEffect(() => {
+    if (scene === 'game' && turn === 'enemy' && gameStatus === 'playing') {
+      const timer = setTimeout(() => {
+        monsterAttack();
+      }, 1200); 
+      return () => clearTimeout(timer);
+    }
+  }, [turn, gameStatus, scene]);
+
+  const monsterAttack = () => {
+    setMonsterAttacking(true);
+    setTimeout(() => {
+      const baseDmg = 8 + Math.floor(level * 1.5);
+      const variance = Math.floor(Math.random() * 4) - 2;
+      let rawDamage = Math.max(1, baseDmg + variance);
+      
+      let actualDamage = rawDamage;
+      if (shield > 0) {
+        if (shield >= rawDamage) {
+          actualDamage = 0;
+          setShield(prev => prev - rawDamage);
+          addFloatingText("格挡!", "block");
+          addLog(`${currentMonster.name} 攻击造成 ${rawDamage} 点伤害，被护盾完全抵消！`, 'info');
+        } else {
+          actualDamage = rawDamage - shield;
+          setShield(0);
+          addLog(`${currentMonster.name} 攻击造成 ${rawDamage} 点伤害，护盾抵消了部分伤害。`, 'enemy');
+        }
+      } else {
+        addLog(`${currentMonster.name} 攻击造成 ${rawDamage} 点伤害！`, 'enemy');
+      }
+
+      if (soundEnabled && actualDamage > 0) playSound('hit');
+      if (soundEnabled && actualDamage === 0) playSound('block');
+
+      if (actualDamage > 0) {
+        setPlayerHp(prev => {
+          const newHp = Math.max(0, prev - actualDamage);
+          if (newHp <= 0) {
+            setGameStatus('lost');
+            addLog("你的生命值归零，战斗失败。", 'enemy');
+            if (soundEnabled) playSound('attack'); 
+          }
+          return newHp;
+        });
+        addFloatingText(`-${actualDamage}`, 'damage');
+      }
+
+      setMonsterAttacking(false);
+      
+      if (playerHp > actualDamage) { 
+        setTurn('player');
+        setMp(prev => Math.min(10, prev + 1)); 
+      }
+    }, 400); 
+  };
+
+  useEffect(() => {
+    if (selectedIndices.length < 2) {
+      setComboResult(null);
+      return;
+    }
+
+    const selectedChars = selectedIndices.map(idx => hand[idx].char);
+    const key = [...selectedChars].sort().join('');
+    
+    if (COMBINATION_DB[key]) {
+      setComboResult(COMBINATION_DB[key]);
+    } else {
+      setComboResult(null);
+    }
+  }, [selectedIndices, hand]);
+
+  const handleCardClick = (index) => {
+    if (gameStatus !== 'playing' || turn !== 'player') return;
+    setHintIndices([]);
+    setSelectedIndices(prev => {
+      if (prev.includes(index)) {
+        return prev.filter(i => i !== index);
+      } else {
+        return [...prev, index];
+      }
+    });
+  };
+
+  const handleAttack = () => {
+    if (!comboResult || turn !== 'player') return;
+
+    let damage = comboResult.power + (character.dmgBonus || 0);
+    const usedChars = selectedIndices.map(i => hand[i].char).join('+');
+    
+    // --- 专家建议：属性克制 ---
+    let isCrit = false;
+    let weaknessLog = '';
+    if (currentMonster.weakness !== 'none' && comboResult.type === currentMonster.weakness) {
+      damage = Math.floor(damage * 1.5);
+      isCrit = true;
+      weaknessLog = ' (属性克制!)';
+    }
+
+    if (soundEnabled) {
+      if (isCrit) playSound('crit');
+      else if (comboResult.type === 'epic') playSound('attack_epic');
+      else playSound('attack_normal');
+    }
+
+    addLog(`组合【${usedChars}】=【${comboResult.char.split('/')[0]}】，造成 ${damage} 点伤害${weaknessLog}！`, 'player');
+
+    setMonsterHp(prev => {
+      const newHp = prev - damage;
+      if (newHp <= 0) {
+        setTimeout(() => handleMonsterDefeat(), 300); 
+        return 0;
+      }
+      return newHp;
+    });
+
+    setMonsterHit(true);
+    setTimeout(() => setMonsterHit(false), 300);
+    
+    addFloatingText(`-${damage}`, 'damage', isCrit ? 'crit' : (comboResult.type === 'epic' ? 'epic' : 'normal'));
+
+    if (comboResult.type === 'heal' || comboResult.type === 'defense') {
+      const healAmount = 10;
+      setPlayerHp(prev => Math.min(maxPlayerHp, prev + healAmount));
+      addFloatingText(`+${healAmount}`, 'heal');
+      addLog(`触发特效，回复 ${healAmount} 点生命值。`, 'player');
+      if (soundEnabled) playSound('heal');
+    }
+
+    if (!discoveredWords.includes(comboResult.char)) {
+      setDiscoveredWords(prev => [...prev, comboResult.char]);
+      addFloatingText("新字解锁!", "achievement");
+    }
+
+    const remainingHand = hand.filter((_, idx) => !selectedIndices.includes(idx));
+    const maxHandSize = 7 + (character.handSizeBonus || 0);
+    const cardsToDraw = maxHandSize - remainingHand.length;
+    
+    const cardsDrawn = drawCards(remainingHand, cardsToDraw);
+    setHand([...remainingHand, ...cardsDrawn]);
+    
+    setSelectedIndices([]);
+    setComboResult(null);
+    setHintIndices([]);
+    
+    const mpGain = selectedIndices.length >= 3 ? 2 : 1;
+    setMp(prev => Math.min(10, prev + mpGain));
+
+    if (monsterHp - damage > 0) {
+      setTurn('enemy');
+    }
+  };
+
+  const calculateFinalDamage = (combo) => {
+    let dmg = combo.power + (character.dmgBonus || 0);
+    if (currentMonster.weakness !== 'none' && combo.type === currentMonster.weakness) {
+      dmg = Math.floor(dmg * 1.5);
+    }
+    return dmg;
+  };
+
+  const useSkill = () => {
+    if (mp < character.skillCost || turn !== 'player') {
+      addFloatingText("墨水不足!", "block");
+      return;
+    }
+    
+    if (soundEnabled) playSound('heal');
+    setMp(prev => prev - character.skillCost);
+    addLog(`使用了技能【${character.skillName}】，消耗 ${character.skillCost} 墨水。`, 'player');
+    
+    const effects = character.skillEffect({ 
+      monsterHp, playerHp, maxPlayerHp 
+    });
+
+    if (effects.monsterHp !== undefined) {
+      const dmg = monsterHp - effects.monsterHp;
+      setMonsterHp(effects.monsterHp);
+      addFloatingText(`-${dmg}`, 'damage');
+      addLog(`技能造成 ${dmg} 点伤害。`, 'player');
+      setMonsterHit(true);
+      setTimeout(() => setMonsterHit(false), 300);
+      if (effects.monsterHp <= 0) setTimeout(() => handleMonsterDefeat(), 300);
+    }
+    
+    if (effects.playerHp !== undefined) {
+      const heal = effects.playerHp - playerHp;
+      setPlayerHp(effects.playerHp);
+      addFloatingText(`+${heal}`, 'heal');
+      addLog(`技能回复 ${heal} 点生命值。`, 'player');
+    }
+  };
+
+  const handleDefend = () => {
+    if (turn !== 'player') return;
+    if (soundEnabled) playSound('block');
+    
+    const defenseAmount = 10; 
+    setShield(prev => prev + defenseAmount);
+    
+    addFloatingText("防御!", "block"); 
+    addLog(`进入防御姿态，获得 ${defenseAmount} 点护盾，并重置手牌。`, 'info');
+    
+    setHand(drawCards([], 7 + (character.handSizeBonus || 0)));
+    setSelectedIndices([]);
+    setHintIndices([]);
+    setComboResult(null);
+    setTurn('enemy');
+  };
+
+  const useHint = () => {
+    if (hintsLeft <= 0 || turn !== 'player') {
+      addFloatingText("次数不足!", "block");
+      return;
+    }
+    if (soundEnabled) playSound('select');
+
+    const solutionIndices = findFirstValidCombo(hand);
+    if (solutionIndices) {
+      setHintIndices(solutionIndices);
+      setHintsLeft(prev => prev - 1);
+      addFloatingText("发现组合!", "info");
+      addLog("使用了提示功能。", 'info');
+    } else {
+      addFloatingText("无解，请防御", "info");
+      addLog("提示：当前手牌无法组合，建议使用防御。", 'info');
+    }
+  };
+
+  const handleMonsterDefeat = () => {
+    if (soundEnabled) playSound('win');
+    addFloatingText("胜利!", "achievement");
+    addLog(`击败了 ${currentMonster.name}！`, 'info');
+    
+    if (hintsLeft < MAX_HINTS) {
+      setHintsLeft(prev => prev + 1);
+    }
+
+    setTimeout(() => {
+      const newLevel = level + 1;
+      setLevel(newLevel);
+      
+      let nextMonster = MONSTER_TYPES[(newLevel - 1) % MONSTER_TYPES.length];
+      if (newLevel % 5 === 0) nextMonster = MONSTER_TYPES[3]; 
+      setCurrentMonster(nextMonster);
+
+      const nextMaxHp = Math.floor(50 * Math.pow(1.15, newLevel - 1) * nextMonster.hpScale);
+      setMaxMonsterHp(nextMaxHp);
+      setMonsterHp(nextMaxHp);
+      
+      setPlayerHp(prev => Math.min(maxPlayerHp, prev + 20));
+      setMp(prev => Math.min(10, prev + 2)); 
+      setShield(0); 
+      setTurn('player');
+      
+      addLog(`进入第 ${newLevel} 关，遭遇 ${nextMonster.name} (HP: ${nextMaxHp})`, 'info');
+    }, 1500);
+  };
+
+  const addFloatingText = (text, type, rarity) => {
+    const id = getUniqueId();
+    setFloatingTexts(prev => [...prev, { id, text, type, rarity }]);
+    setTimeout(() => {
+      setFloatingTexts(prev => prev.filter(ft => ft.id !== id));
+    }, 1000);
+  };
+
+  const startGame = (selectedChar) => {
+    setCharacter(selectedChar);
+    const baseHp = 100 + (selectedChar.hpBonus || 0);
+    setPlayerHp(baseHp);
+    setMaxPlayerHp(baseHp);
+    setLevel(1);
+    setMonsterHp(50);
+    setMaxMonsterHp(50);
+    setHand(drawCards([], 7 + (selectedChar.handSizeBonus || 0)));
+    setSelectedIndices([]);
+    setHintIndices([]);
+    setGameStatus('playing');
+    setTurn('player');
+    setHintsLeft(3);
+    setMp(3);
+    setShield(0);
+    setBattleLogs([]);
+    setCurrentMonster(MONSTER_TYPES[0]);
+    setScene('game');
+    addLog(`游戏开始！选择了英雄：${selectedChar.name}`, 'info');
+    addLog(`遭遇了 ${MONSTER_TYPES[0].name}`, 'info');
+  };
+
+  return (
+    <div className="fixed inset-0 bg-stone-100 font-sans text-stone-800 flex flex-col overflow-hidden select-none">
+      
+      {floatingTexts.map(ft => (
+        <FloatingText key={ft.id} text={ft.text} type={ft.type} rarity={ft.rarity} />
+      ))}
+
+      {/* 顶部状态栏 */}
+      {scene === 'game' && (
+        <header className="bg-stone-800 text-amber-50 px-4 py-2 shadow-lg flex justify-between items-center z-30 h-14 shrink-0">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setScene('menu')} className="hover:text-amber-400 transition">
+              <Home size={20} />
+            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-xl">{character.icon}</span>
+              <div className="hidden md:block text-sm font-bold">{character.name}</div>
+            </div>
+            <button onClick={() => setSoundEnabled(!soundEnabled)} className="text-stone-400 hover:text-white">
+              {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+            </button>
+          </div>
+          
+          <div className="flex gap-3 text-sm items-center font-mono">
+             <div className="flex items-center gap-1 text-yellow-400">
+               <Trophy size={16} /> Lv.{level}
+             </div>
+             <button 
+               onClick={() => setShowLogs(true)}
+               className="bg-stone-700 p-1.5 rounded hover:bg-stone-600 relative"
+               title="战斗记录"
+             >
+               <FileText size={16} />
+               <div className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full animate-ping opacity-75"></div>
+             </button>
+             <button 
+              onClick={() => setShowDictionary(!showDictionary)}
+              className="bg-stone-700 p-1.5 rounded hover:bg-stone-600"
+            >
+              <BookOpen size={16} />
+            </button>
+          </div>
+        </header>
+      )}
+
+      <main className="flex-1 relative flex flex-col items-center w-full max-w-2xl mx-auto overflow-hidden">
+        
+        {scene === 'menu' && (
+          <div className="flex flex-col items-center justify-center h-full space-y-8 animate-fade-in">
+            <div className="text-center space-y-2">
+              <h1 className="text-4xl md:text-6xl font-bold text-stone-800 tracking-wider font-serif">
+                汉字魔法战
+              </h1>
+              <div className="text-stone-500 tracking-[0.5em] text-sm md:text-base">- 偏旁部首 -</div>
+            </div>
+            {/* 交互专家建议：增加动效吸引点击 */}
+            <button 
+              onClick={() => { playSound('select'); setScene('charSelect'); }}
+              className="bg-amber-600 hover:bg-amber-700 text-white text-xl font-bold py-4 px-12 rounded-2xl shadow-lg transition transform hover:scale-105 active:scale-95 flex items-center gap-2 animate-bounce-slow"
+            >
+              <Play fill="currentColor" /> 开始冒险
+            </button>
+            <div className="flex gap-4">
+              <button onClick={() => setScene('instructions')} className="text-stone-500 hover:underline">游戏说明</button>
+              <button onClick={() => setShowDictionary(true)} className="text-stone-500 hover:underline">图鉴</button>
+            </div>
+          </div>
+        )}
+
+        {scene === 'charSelect' && (
+          <div className="flex flex-col items-center justify-center h-full space-y-6 animate-fade-in p-4 overflow-y-auto">
+            <h2 className="text-3xl font-bold text-stone-800 mb-4">选择你的英雄</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-4xl">
+              {CHARACTERS.map(char => (
+                <button
+                  key={char.id}
+                  onClick={() => { playSound('select'); startGame(char); }}
+                  className="bg-white border-2 border-stone-200 rounded-xl p-6 hover:border-amber-500 hover:shadow-xl transition flex flex-col items-center text-center gap-3 group"
+                >
+                  <div className="text-4xl p-4 bg-stone-100 rounded-full group-hover:scale-110 transition">{char.icon}</div>
+                  <h3 className="text-xl font-bold">{char.name}</h3>
+                  <p className="text-sm text-stone-500">{char.desc}</p>
+                  <div className="mt-2 w-full bg-amber-50 rounded p-2 text-xs text-amber-800">
+                    <strong>技能: {char.skillName}</strong><br/>
+                    {char.skillDesc}<br/>
+                    (消耗 {char.skillCost} 墨水)
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {scene === 'instructions' && (
+          <div className="p-6 overflow-y-auto h-full w-full">
+            <h2 className="text-2xl font-bold mb-4">游戏说明</h2>
+            <p className="mb-4">通过组合偏旁部首，释放汉字魔法攻击怪物！</p>
+            <ul className="list-disc pl-5 space-y-2 text-stone-700">
+              <li><strong>攻击：</strong>选中2个或更多卡牌组成汉字。</li>
+              <li><strong>结构：</strong>留意汉字的结构（左右、上下、包围），合理组合威力更大！</li>
+              <li><strong>属性克制：</strong>观察怪物的弱点，用对应的偏旁（如“氵”克“墨迹妖”）造成<span className="text-purple-600 font-bold">暴击</span>！</li>
+              <li><strong>墨水：</strong>组合汉字可恢复墨水，墨水用于释放角色必杀技。</li>
+              <li><strong>防御：</strong>手牌不佳时点击“盾牌”图标，可弃牌重抽并获得护盾。</li>
+            </ul>
+            <button onClick={() => setScene('menu')} className="mt-8 bg-stone-200 px-6 py-2 rounded-lg font-bold w-full">返回</button>
+          </div>
+        )}
+
+        {scene === 'game' && (
+          <>
+            <div className="flex-[0.4] w-full flex flex-col items-center justify-center relative bg-stone-100 border-b border-stone-200">
+              <div className={`absolute top-2 px-3 py-1 rounded-full text-xs font-bold shadow-sm transition-all
+                ${turn === 'player' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800 scale-110'}
+              `}>
+                {turn === 'player' ? '你的回合' : '敌方行动'}
+              </div>
+              <div className="w-full flex justify-center items-center p-4">
+                {gameStatus === 'playing' && (
+                  <Monster 
+                    level={level} 
+                    hp={monsterHp} 
+                    maxHp={maxMonsterHp} 
+                    isAttacking={monsterAttacking}
+                    onHitAnim={monsterHit}
+                    turn={turn}
+                    monsterType={currentMonster}
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="flex-[0.6] w-full bg-white flex flex-col relative shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+              
+              {/* 玩家状态条 */}
+              <div className="h-12 bg-stone-50 border-b border-stone-100 flex items-center justify-between px-4">
+                 <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-stone-200 shadow-sm">
+                      <Heart className="text-red-500 fill-current w-4 h-4" />
+                      <span className="font-bold text-lg leading-none">{playerHp}/{maxPlayerHp}</span>
+                    </div>
+                    {shield > 0 && (
+                      <div className="flex items-center gap-1 bg-stone-200 px-2 py-1 rounded-lg animate-fade-in">
+                        <Shield className="text-stone-600 w-3 h-3" />
+                        <span className="font-bold text-sm text-stone-600">{shield}</span>
+                      </div>
+                    )}
+                 </div>
+                 
+                 <div className="flex items-center gap-1">
+                    {[...Array(10)].map((_, i) => (
+                      <div key={i} className={`w-1.5 h-3 rounded-sm transition-colors ${i < mp ? 'bg-blue-600' : 'bg-stone-300'}`} />
+                    ))}
+                 </div>
+              </div>
+
+              {/* 工具栏 */}
+              <div className="h-14 flex items-center justify-between px-4 border-b border-stone-100">
+                 <button 
+                  onClick={useSkill}
+                  disabled={turn !== 'player' || mp < character.skillCost}
+                  className={`
+                    flex items-center gap-2 px-4 py-1.5 rounded-full font-bold text-sm transition-all
+                    ${mp >= character.skillCost && turn === 'player'
+                      ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md active:scale-95' 
+                      : 'bg-stone-200 text-stone-400 cursor-not-allowed'}
+                  `}
+                >
+                  <Zap size={14} className={mp >= character.skillCost ? "fill-yellow-300 text-yellow-300" : ""} />
+                  {character.skillName} ({character.skillCost})
+                </button>
+
+                <div className="flex gap-2">
+                   <button 
+                    onClick={useHint}
+                    disabled={turn !== 'player' || hintsLeft <= 0}
+                    className="p-2 rounded-full bg-yellow-50 text-yellow-600 hover:bg-yellow-100 disabled:opacity-50 relative"
+                  >
+                    <Lightbulb size={20} />
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center">{hintsLeft}</span>
+                  </button>
+                  <button 
+                    onClick={handleDefend}
+                    disabled={turn !== 'player'}
+                    className="p-2 rounded-full bg-stone-100 text-stone-600 hover:bg-stone-200 disabled:opacity-50"
+                    title="防御"
+                  >
+                    <Shield size={20} />
+                  </button>
+                </div>
+              </div>
+
+              {/* 组合预览区 (合成台) - 交互专家建议优化视觉 */}
+              <div className="h-16 flex items-center justify-center bg-stone-50/50">
+                {comboResult ? (
+                  <button 
+                    onClick={handleAttack}
+                    className={`
+                      animate-bounce-slow flex items-center gap-3 px-6 py-2 rounded-full shadow-lg active:scale-95 transition border-2 group
+                      ${getRarity(comboResult.type) === 'epic' ? 'bg-amber-100 border-amber-500 ring-2 ring-amber-300' : 
+                        getRarity(comboResult.type) === 'rare' ? 'bg-indigo-50 border-indigo-400 ring-1 ring-indigo-200' :
+                        'bg-white border-stone-300'}
+                    `}
+                  >
+                    {/* 结构符号显示 (Structure Expert Suggestion) */}
+                    <div className="opacity-50 group-hover:opacity-100 transition-opacity">
+                      <StructureIcon type={comboResult.struct} />
+                    </div>
+                    <span className={`text-3xl font-serif font-bold ${
+                      getRarity(comboResult.type) === 'epic' ? 'text-amber-800 drop-shadow-sm' : 
+                      getRarity(comboResult.type) === 'rare' ? 'text-indigo-800' : 'text-stone-800'
+                    }`}>
+                      {comboResult.char.split('/')[0]}
+                    </span>
+                    <div className="flex flex-col items-start leading-none">
+                      <span className={`text-xs font-bold ${
+                        getRarity(comboResult.type) === 'epic' ? 'text-amber-800' : 
+                        getRarity(comboResult.type) === 'rare' ? 'text-indigo-700' : 'text-stone-500'
+                      }`}>{comboResult.desc}</span>
+                      <span className="text-xs font-bold text-red-600 mt-0.5">
+                         威力: {calculateFinalDamage(comboResult)}
+                         {currentMonster.weakness !== 'none' && comboResult.type === currentMonster.weakness && <span className="text-[10px] ml-1 text-purple-600 animate-pulse">(克制!)</span>}
+                      </span>
+                    </div>
+                  </button>
+                ) : (
+                  <div className="text-stone-400 text-sm italic flex items-center gap-2">
+                    <span>点击卡牌组合</span>
+                    <span className="text-xs bg-stone-200 px-1 rounded">左右</span>
+                    <span className="text-xs bg-stone-200 px-1 rounded">上下</span>
+                  </div>
+                )}
+              </div>
+
+              {/* 手牌区域 */}
+              <div className="flex-1 overflow-y-auto p-2 bg-stone-100 inner-shadow">
+                <div className="flex flex-wrap justify-center content-start gap-2 pb-4">
+                  {hand.map((card, idx) => (
+                    <Card 
+                      key={card.id} 
+                      char={card.char} 
+                      selected={selectedIndices.includes(idx)}
+                      isHinted={hintIndices.includes(idx)}
+                      onClick={() => handleCardClick(idx)}
+                      disabled={gameStatus !== 'playing' || turn !== 'player'}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+            
+            {/* 结算画面 */}
+            {gameStatus !== 'playing' && (
+              <div className="absolute inset-0 bg-stone-900/85 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white p-6 text-center animate-fade-in">
+                <h2 className="text-5xl font-bold mb-4 font-serif text-amber-400">
+                  {gameStatus === 'won' ? '大获全胜' : '败北'}
+                </h2>
+                <p className="mb-8 text-lg text-stone-300">
+                  {gameStatus === 'won' ? '你的文采震惊了妖界！' : '还需要多加练习书法...'}
+                </p>
+                <div className="flex gap-4">
+                  <button 
+                    onClick={() => { playSound('select'); startGame(character); }} 
+                    className="bg-amber-600 hover:bg-amber-700 font-bold py-3 px-8 rounded-full flex items-center gap-2 transition"
+                  >
+                    <RotateCcw /> 再来一局
+                  </button>
+                  <button 
+                    onClick={() => setScene('menu')}
+                    className="bg-stone-700 hover:bg-stone-600 font-bold py-3 px-6 rounded-full"
+                  >
+                    主菜单
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </main>
+
+      {showLogs && <BattleLogModal logs={battleLogs} onClose={() => setShowLogs(false)} />}
+
+      {/* 图鉴 - 增加结构显示 */}
+      {showDictionary && (
+        <div className="fixed inset-0 bg-stone-900/95 z-[60] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl h-[80vh] rounded-2xl flex flex-col overflow-hidden shadow-2xl">
+            <div className="p-4 bg-stone-100 border-b flex justify-between items-center">
+              <h3 className="font-bold text-lg flex items-center gap-2 text-stone-800">
+                <BookOpen size={20} className="text-amber-600"/> 汉字宝典
+              </h3>
+              <button onClick={() => setShowDictionary(false)} className="text-stone-500 hover:text-stone-800 font-bold px-3">X</button>
+            </div>
+            <div className="p-4 overflow-y-auto grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2">
+              {Object.entries(COMBINATION_DB).map(([key, val]) => {
+                const isDiscovered = discoveredWords.includes(val.char);
+                const rarity = getRarity(val.type);
+                const config = getRarityConfig(rarity);
+                return (
+                  <div key={key} className={`
+                    aspect-square rounded-lg flex flex-col items-center justify-center border relative
+                    ${isDiscovered 
+                      ? `${config.bg} ${config.border} ${config.color}` 
+                      : 'bg-stone-100 border-stone-200 text-stone-300'}
+                  `}>
+                    {isDiscovered && (
+                      <div className="absolute top-1 left-1 opacity-50">
+                        <StructureIcon type={val.struct} size={12}/>
+                      </div>
+                    )}
+                    <div className="text-xl md:text-2xl font-serif font-bold">{isDiscovered ? val.char.split('/')[0] : '?'}</div>
+                    {isDiscovered && rarity !== 'normal' && (
+                      <div className={`absolute top-1 right-1 flex items-center gap-0.5 text-[8px] font-bold uppercase`}>
+                        {config.icon}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        .shake-animation { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; }
+        .inner-shadow { box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05); }
+        @keyframes shake {
+          10%, 90% { transform: translate3d(-1px, 0, 0); }
+          20%, 80% { transform: translate3d(2px, 0, 0); }
+          30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+          40%, 60% { transform: translate3d(4px, 0, 0); }
+        }
+        @keyframes float-up {
+          0% { transform: translate(-50%, 0) scale(0.5); opacity: 0; }
+          20% { transform: translate(-50%, -40px) scale(1.2); opacity: 1; }
+          100% { transform: translate(-50%, -100px) scale(1); opacity: 0; }
+        }
+        .animate-float-up { animation: float-up 0.8s ease-out forwards; }
+        .animate-bounce-slow { animation: bounce 3s infinite; }
+        @keyframes bounce {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-5%); }
+        }
+      `}</style>
+    </div>
+  );
+}
