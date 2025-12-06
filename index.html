@@ -111,6 +111,13 @@
 
     // 组合字典
     const COMBINATION_DB = {
+      // === 新增修正 (用户反馈) ===
+      [k('氵','户')]: { char: '沪', power: 15, desc: '上海别称', type: 'water', struct: 'lr' },
+      [k('氵','古')]: { char: '沽', power: 12, desc: '沽名钓誉', type: 'water', struct: 'lr' },
+      [k('氵','圭')]: { char: '洼', power: 12, desc: '水洼', type: 'water', struct: 'lr' },
+      [k('氵','央')]: { char: '泱', power: 15, desc: '泱泱大国', type: 'water', struct: 'lr' },
+      [k('讠','卜')]: { char: '讣', power: 12, desc: '讣告', type: 'mind', struct: 'lr' },
+
       // === 左右结构 (lr) ===
       [k('讠','正')]: { char: '证', power: 15, desc: '证据', type: 'mind', struct: 'lr' },
       [k('氵','工')]: { char: '江', power: 15, desc: '江水', type: 'water', struct: 'lr' },
@@ -237,7 +244,9 @@
       [k('艹','央')]: { char: '英', power: 18, desc: '英雄', type: 'good', struct: 'tb' },
       [k('艹','分')]: { char: '芬', power: 15, desc: '芬芳', type: 'wood', struct: 'tb' },
       [k('艹','方')]: { char: '芳', power: 15, desc: '芳香', type: 'wood', struct: 'tb' },
-      [k('艹','节')]: { char: '节', power: 15, desc: '节日', type: 'normal', struct: 'tb' },
+      // 移除了 [k('艹','节')] 和 [k('宀','宅')] (Self-referencing logic)
+      [k('艹','节')]: null, 
+      [k('宀','宅')]: null,
       [k('艹','乙')]: { char: '艺', power: 15, desc: '艺术', type: 'mind', struct: 'tb' },
 
       [k('宀','玉')]: { char: '宝', power: 20, desc: '宝贝', type: 'gold', struct: 'tb' },
@@ -250,7 +259,7 @@
       [k('宀','丁')]: { char: '宁', power: 15, desc: '安宁', type: 'heal', struct: 'tb' },
       [k('宀','申')]: { char: '审', power: 15, desc: '审查', type: 'mind', struct: 'tb' },
       [k('宀','木')]: { char: '宋', power: 12, desc: '宋朝', type: 'normal', struct: 'tb' },
-      [k('宀','宅')]: { char: '宅', power: 12, desc: '住宅', type: 'earth', struct: 'tb' },
+      //[k('宀','宅')]: { char: '宅', power: 12, desc: '住宅', type: 'earth', struct: 'tb' }, // Removed per request
       [k('宀','见')]: { char: '觉', power: 15, desc: '感觉', type: 'mind', struct: 'tb' },
       [k('宀','奇')]: { char: '寄', power: 15, desc: '寄信', type: 'action', struct: 'tb' },
       [k('宀','寸')]: { char: '守', power: 18, desc: '守护', type: 'defense', struct: 'tb' },
@@ -477,7 +486,9 @@
       '丙', '甬', '正', '知',
       '出', '至', '由', '肖',
       '起', '召', '取', '戉',
-      '巳', '矢', '儿', '希'
+      '巳', '矢', '儿', '希',
+      // 新增字所需的部件
+      '户', '古', '圭', '央', '卜' 
     ];
 
     const MAX_HINTS = 5;
