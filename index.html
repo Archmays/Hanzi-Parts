@@ -705,6 +705,10 @@
       } else if (type === 'info') {
         colorClass = 'text-blue-600';
         sizeClass = 'text-xl';
+      } else if (type === 'achievement') {
+        colorClass = 'text-yellow-600';
+        sizeClass = 'text-2xl';
+        shadowClass = 'drop-shadow-md';
       }
       return (
         <div className={`absolute z-50 font-bold animate-float-up pointer-events-none whitespace-nowrap ${colorClass} ${sizeClass} ${shadowClass}`} style={{ top: '40%', left: '50%', transform: 'translate(-50%, -50%)' }}>
@@ -861,24 +865,24 @@
         if (needed > 0) {
            const keys = Object.keys(COMBINATION_DB);
            // 过滤出2字组合
-           const validKeys = keys.filter(k => k.length <= 2);
+           const validKeys = keys.filter(k => k.length <= 2 && COMBINATION_DB[k]); // 确保不选到null
            
            for (let n = 0; n < needed; n++) {
               if (finalHand.length < 2) break; // 空间不足
               
               const randomKey = validKeys[Math.floor(Math.random() * validKeys.length)];
-              const guaranteedChars = randomKey.split('');
-              
-              // 替换最后两张 (确保不越界)
-              if (finalHand.length >= 2 + (n * 2)) {
-                 // 使用 unshift 或 push 可能会破坏 React 列表 key 的稳定性，直接修改属性
-                 // 注意：这里需要确保索引是有效的
-                 let idx1 = finalHand.length - 1 - (n*2);
-                 let idx2 = finalHand.length - 2 - (n*2);
-                 if (idx1 >= 0 && idx2 >= 0) {
-                     finalHand[idx1].char = guaranteedChars[0];
-                     finalHand[idx2].char = guaranteedChars[1];
-                 }
+              if (randomKey) {
+                const guaranteedChars = randomKey.split('');
+                
+                // 替换最后两张 (确保不越界)
+                if (finalHand.length >= 2 + (n * 2)) {
+                   let idx1 = finalHand.length - 1 - (n*2);
+                   let idx2 = finalHand.length - 2 - (n*2);
+                   if (idx1 >= 0 && idx2 >= 0) {
+                       finalHand[idx1].char = guaranteedChars[0];
+                       finalHand[idx2].char = guaranteedChars[1];
+                   }
+                }
               }
            }
         }
@@ -1139,7 +1143,16 @@
           setMaxMonsterHp(nextMaxHp);
           setMonsterHp(nextMaxHp);
           
-          setPlayerHp(prev => Math.min(maxPlayerHp, prev + 20));
+          // 修复：回满生命值
+          setPlayerHp(maxPlayerHp);
+          
+          // 修复：更换所有手牌（重新抽卡）
+          const handSize = 7 + (character.handSizeBonus || 0);
+          setHand(drawCards([], handSize));
+          setSelectedIndices([]);
+          setHintIndices([]);
+          setComboResult(null);
+
           setMp(prev => Math.min(10, prev + 2)); 
           setShield(0); 
           setTurn('player');
@@ -1473,6 +1486,9 @@
                 </div>
                 <div className="p-4 overflow-y-auto grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2">
                   {Object.entries(COMBINATION_DB).map(([key, val]) => {
+                    // FIX: 添加空值检查，防止因为数据库中的 null 条目导致崩溃
+                    if (!val) return null;
+                    
                     const isDiscovered = discoveredWords.includes(val.char);
                     const rarity = getRarity(val.type);
                     const config = getRarityConfig(rarity);
